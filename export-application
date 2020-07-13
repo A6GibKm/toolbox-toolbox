@@ -3,9 +3,154 @@
 import os
 import argparse
 import shutil
+import subprocess
+
 from xdg.DesktopEntry import DesktopEntry
 from xdg.BaseDirectory import xdg_data_home
+from xdg import BaseDirectory
+import xdg.IconTheme
+
 __license__ = 'MIT'
+
+def copy_icons(app: str):
+    sizes = [16, 24, 32, 48, 64, 96, 128, 256, 512, 'scalable']
+    messages = []
+    for size in sizes:
+        if type(size) is int:
+            icon_path = xdg.IconTheme.getIconPath(app, size=size)
+        else:
+            icon_path = xdg.IconTheme.getIconPath(app, extensions=['svg'])
+
+        if icon_path is None:
+            return
+        elif BaseDirectory.save_data_path('') in icon_path:
+            continue
+
+        new_icon_path = os.path.join(BaseDirectory.save_data_path(''), icon_path.replace('/usr/share/', ''))
+        if os.path.exists(new_icon_path):
+            message = 'Icon {} already installed'.format(new_icon_path)
+            if message not in messages:
+                messages.append(message)
+                print(message)
+            continue
+
+        os.makedirs(os.path.dirname(new_icon_path), exist_ok=True)
+        shutil.copy(icon_path, new_icon_path)
+        os.chmod(new_icon_path, 644)
+        print('Copied: {} to {}'.format(icon_path, new_icon_path))
+
+       
+# Taken from https://github.com/takluyver/pyxdg/blob/master/xdg/Mime.py
+def copy_mime(app: str):
+    application = app + '.xml'
+    package_file = os.path.join('/usr/share', 'mime', 'packages', application)
+
+    if not os.path.exists(package_file):
+        return # mime not found
+
+    with open(package_file) as f:
+        new_data = f.read()
+
+    # See if the file is already installed
+    package_dir = os.path.join('mime', 'packages')
+    new_file = os.path.join(BaseDirectory.save_data_path(package_dir), application)
+    resource = os.path.join(package_dir, application)
+    for x in BaseDirectory.load_data_paths(resource):
+        if '/usr/' not in x:
+            try:
+                with open(x) as f:
+                    old_data = f.read()
+            except:
+                continue
+            if old_data == new_data:
+                print('Mime data {} already installed'.format(x))
+                return  # Already installed
+
+    # Not already installed; add a new copy
+    # Create the directory structure...
+
+    # Write the file...
+    with open(new_file, 'w') as f:
+        f.write(new_data)
+        print('Copied: {} to {}'.format(package_file, new_file))
+
+    # Update the database...
+    command = 'update-mime-database'
+    if os.spawnlp(os.P_WAIT, command, command, BaseDirectory.save_data_path('mime')):
+        os.unlink(new_file)
+        raise Exception("The '%s' command returned an error code!\n" \
+                  "Make sure you have the freedesktop.org shared MIME package:\n" \
+                  "http://standards.freedesktop.org/shared-mime-info/" % command)
+
+
+def copy_desktop_file(app: str):
+    application = app + '.desktop'
+    app_path = os.path.join('/usr/share/applications', application)
+    if not os.path.exists(app_path):
+        return
+    desktop_file = DesktopEntry(app_path)
+
+    for entry in desktop_file.content:
+        if 'Exec' in desktop_file.content[entry]:
+            exec_field = desktop_file.content[entry]['Exec']
+            desktop_file.content[entry]['Exec'] = 'toolbox run ' + exec_field
+        if 'TryExec' in desktop_file.content[entry]:
+            exec_field = desktop_file.content[entry]['TryExec']
+            desktop_file.content[entry]['TryExec'] = 'toolbox'
+
+    new_path = os.path.join(BaseDirectory.save_data_path('applications'), application)
+    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+    desktop_file.write(new_path)
+
+    print('Copied: {} to {}'.format(app_path, new_path))
+    command = ['update-desktop-database', BaseDirectory.save_data_path('applications')]
+
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        print('Failed to run', ' '.join(command))
+
+
+def get_icon_name(app: str) -> str:
+    application = app + '.desktop'
+    app_path = os.path.join('/usr/share/applications', application)
+    desktop_file = DesktopEntry(app_path)
+    if 'Desktop Entry' not in desktop_file.content:
+        return
+    if 'Icon' in desktop_file.content['Desktop Entry']:
+        return desktop_file.content['Desktop Entry']['Icon']
+    else:
+        return app
+
+def copy_metadata(app: str):
+    for data_dir in ['appdata', 'metainfo']:
+        application = app + '.' + data_dir + '.xml'
+        xml_dir = os.path.join('/usr/share', data_dir)
+        metadata_path = os.path.join(xml_dir, application)
+
+        if not os.path.exists(metadata_path):
+            continue
+
+        package_dir = data_dir
+        resource = os.path.join(package_dir, application)
+        for x in BaseDirectory.load_data_paths(resource):
+            try:
+                with open(x) as f:
+                    old_data = f.read()
+            except:
+                continue
+            if old_data == open(metadata_path).read() and '/usr' not in x:
+                print('Metadata {} already installed'.format(x))
+                continue  # Already installed
+        else:
+            continue
+
+        new_metadata_path = os.path.join(BaseDirectory.save_data_path(package_dir), application)
+        os.makedirs(os.path.dirname(new_metadata_path), exist_ok=True)
+        shutil.copy(metadata_path, new_metadata_path)
+        os.chmod(new_metadata_path, 644)
+        print('Copied: {} to {}'.format(metadata_path, new_metadata_path))
+
 
 def main():
 
@@ -29,56 +174,12 @@ def main():
         exit('Specify an application. See --help for additional information')
 
     app = opts.application
-    app_path = os.path.join('/usr/share/applications', app + '.desktop')
-    desktop_file = DesktopEntry(app_path)
-    exec_field = desktop_file.content['Desktop Entry']['Exec']
-    desktop_file.content['Desktop Entry']['Exec'] = 'toolbox run ' + exec_field
+    copy_desktop_file(app)
+    app_icon = get_icon_name(app)
+    copy_icons(app_icon)
+    copy_mime(app)
+    copy_metadata(app)
 
-    if desktop_file.content['Desktop Entry']['Icon']:
-        icon_name = desktop_file.content['Desktop Entry']['Icon']
-    else:
-        icon_name = app
 
-    new_path = os.path.join(xdg_data_home, app_path.replace('/usr/share/', ''))
-    os.makedirs(os.path.dirname(new_path), exist_ok=True)
-    desktop_file.write(new_path)
-    print('Copied: {} to {}'.format(app_path, new_path))
-
-    icon_dir = 'icons/hicolor'
-    usr_icon = os.path.join('/usr/share', icon_dir)
-
-    for size in os.listdir(usr_icon):
-        complete_path = os.path.join(usr_icon, size, 'apps')
-
-        if not os.path.exists(complete_path):
-            continue
-
-        for icon in os.listdir(complete_path):
-            if os.path.splitext(icon)[0] == icon_name:
-                icon_path = os.path.join(complete_path, icon)
-                new_path = os.path.join(xdg_data_home, icon_path.replace('/usr/share/', ''))
-                if os.path.exists(icon_path):
-                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
-                    shutil.copy(icon_path, new_path)
-                    print('Copied: {} to {}'.format(icon_path, new_path))
-
-    for data_dir in ['appdata', 'metainfo']:
-        xml_dir = os.path.join('/usr/share', data_dir)
-
-        if not os.path.exists(xml_dir):
-            continue
-
-        for appdata in os.listdir(xml_dir):
-            appdata_name = appdata.replace('.appdata.xml', '').replace('.metainfo.xml', '')
-
-            if appdata_name == app:
-               xml_path = os.path.join(xml_dir, appdata)
-               new_path = os.path.join(xdg_data_home, xml_path.replace('/usr/share/', ''))
-               os.makedirs(os.path.dirname(new_path), exist_ok=True)
-               shutil.copy(xml_path, new_path)
-               print('Copied: {} to {}'.format(xml_path, new_path))
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
-# TODO Check if inside of toolbox.
