@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+import shutil
+from xdg.DesktopEntry import DesktopEntry
+from xdg.BaseDirectory import xdg_data_home
+__license__ = 'MIT'
+
+def main():
+
+    # if not os.path.exists('/README.md'):
+    if os.environ.get('TOOLBOX_PATH') is None:
+        exit('Not inside a toolbox container')
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('application',
+                        help='application to export', nargs='?')
+    parser.add_argument('--list', action='store_true',
+                        help='list desktop files inside the toolbox')
+    opts = parser.parse_args()
+
+    if opts.list:
+        for f in os.listdir('/usr/share/applications'):
+            print(f.replace('.desktop', ''))
+        exit()
+
+    if not opts.application:
+        exit('Specify an application. See --help for additional information')
+
+    app = opts.application
+    app_path = os.path.join('/usr/share/applications', app + '.desktop')
+    desktop_file = DesktopEntry(app_path)
+    exec_field = desktop_file.content['Desktop Entry']['Exec']
+    desktop_file.content['Desktop Entry']['Exec'] = 'toolbox run ' + exec_field
+
+    if desktop_file.content['Desktop Entry']['Icon']:
+        icon_name = desktop_file.content['Desktop Entry']['Icon']
+    else:
+        icon_name = app
+
+    new_path = os.path.join(xdg_data_home, app_path.replace('/usr/share/', ''))
+    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+    desktop_file.write(new_path)
+    print('Copied: {} to {}'.format(app_path, new_path))
+
+    icon_dir = 'icons/hicolor'
+    usr_icon = os.path.join('/usr/share', icon_dir)
+
+    for size in os.listdir(usr_icon):
+        complete_path = os.path.join(usr_icon, size, 'apps')
+
+        if not os.path.exists(complete_path):
+            continue
+
+        for icon in os.listdir(complete_path):
+            if os.path.splitext(icon)[0] == icon_name:
+                icon_path = os.path.join(complete_path, icon)
+                new_path = os.path.join(xdg_data_home, icon_path.replace('/usr/share/', ''))
+                if os.path.exists(icon_path):
+                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                    shutil.copy(icon_path, new_path)
+                    print('Copied: {} to {}'.format(icon_path, new_path))
+
+    for data_dir in ['appdata', 'metainfo']:
+        xml_dir = os.path.join('/usr/share', data_dir)
+
+        if not os.path.exists(xml_dir):
+            continue
+
+        for appdata in os.listdir(xml_dir):
+            appdata_name = appdata.replace('.appdata.xml', '').replace('.metainfo.xml', '')
+
+            if appdata_name == app:
+               xml_path = os.path.join(xml_dir, appdata)
+               new_path = os.path.join(xdg_data_home, xml_path.replace('/usr/share/', ''))
+               os.makedirs(os.path.dirname(new_path), exist_ok=True)
+               shutil.copy(xml_path, new_path)
+               print('Copied: {} to {}'.format(xml_path, new_path))
+
+if __name__ == '__main__':
+    main()
+
+# TODO Check if inside of toolbox.
